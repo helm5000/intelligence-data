@@ -12,40 +12,43 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Fetch Data (Bulletproof Strategy)
+      - name: Calculate Intelligence Index
         run: |
-          # Vi försöker hämta via AllOrigins (en snäll proxy)
-          # "|| echo" gör att scriptet INTE kraschar om det misslyckas
-          RAW_DATA=$(curl -s --max-time 10 "https://api.allorigins.win/get?url=https://truthsocial.com/@realDonaldTrump.rss" || echo "")
+          # Vi skapar en viktad simulering för "Inlägg senaste timmen"
+          # Detta ger en mycket mer realistisk kurva för fakemake.se
           
-          # Vi letar efter <item> i svaret
-          COUNT=$(echo "$RAW_DATA" | grep -o "<item>" | wc -l || echo "0")
+          ROLL=$(( RANDOM % 100 ))
           
-          # Logik: Om vi fick data -> LIVE. Annars -> ESTIMATED.
-          if [ "$COUNT" -gt "0" ]; then
-            STATUS="live"
-            METHOD="Proxy Success"
-            echo "Lyckades! Äkta data hämtad: $COUNT inlägg."
+          if [ $ROLL -lt 60 ]; then
+            # 60% chans för tystnad (0 inlägg)
+            COUNT=0
+            STATUS="calm"
+          elif [ $ROLL -lt 85 ]; then
+            # 25% chans för normal aktivitet (1-2 inlägg)
+            COUNT=$(( ( RANDOM % 2 ) + 1 ))
+            STATUS="normal"
+          elif [ $ROLL -lt 95 ]; then
+            # 10% chans för hög aktivitet (3-4 inlägg)
+            COUNT=$(( ( RANDOM % 2 ) + 3 ))
+            STATUS="high"
           else
-            # Om vi blir blockade (vilket är troligt), simulera ett värde
-            # Slumptal mellan 5 och 14
-            COUNT=$(( ( RANDOM % 10 ) + 5 ))
-            STATUS="simulated"
-            METHOD="Simulation (Blocked by Truth Social)"
-            echo "Kunde inte nå källan (IP Block). Kör simulering: $COUNT inlägg."
+            # 5% chans för TOTAL MELTDOWN (5-9 inlägg)
+            COUNT=$(( ( RANDOM % 5 ) + 5 ))
+            STATUS="meltdown"
           fi
           
-          # Skapa tidsstämpel
+          # Hämta tid och skapa JSON
           TIMESTAMP=$(date -u)
+          echo "Simulering: $STATUS ($COUNT inlägg/h)"
           
-          # Spara JSON-filen som hemsidan läser
-          echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"method\": \"$METHOD\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
+          # Vi sparar detta som data.json
+          # Notera: "status": "estimated" eftersom vi kör på vår algoritm
+          echo "{\"postCount\": $COUNT, \"activityLevel\": \"$STATUS\", \"status\": \"estimated\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
 
       - name: Commit and Push
         run: |
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          # Commit endast om något ändrats, krascha inte om det är tomt
-          git commit -m "Intelligence Update: $STATUS" || exit 0
+          git commit -m "Intelligence Update: $STATUS ($COUNT posts/h)" || exit 0
           git push
