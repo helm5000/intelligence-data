@@ -1,0 +1,24 @@
+name: Update Trump Data
+on:
+  schedule:
+    - cron: '*/30 * * * *' # Körs var 30:e minut
+  workflow_dispatch: # Tillåter manuell start
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Fetch Truth Social Data
+        run: |
+          # Hämtar RSS och räknar antalet <item> (inlägg)
+          COUNT=$(curl -s https://truthsocial.com/@realDonaldTrump.rss | grep -c "<item>")
+          TIMESTAMP=$(date -u)
+          echo "{\"postCount\": $COUNT, \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
+      - name: Commit and Push
+        run: |
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+          git add data.json
+          git commit -m "Update intelligence data" || exit 0
+          git push
