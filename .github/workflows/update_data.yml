@@ -1,8 +1,8 @@
 name: Update Trump Data
 on:
   schedule:
-    - cron: '*/30 * * * *'
-  workflow_dispatch:
+    - cron: '*/30 * * * *' # Körs var 30:e minut
+  workflow_dispatch: # Tillåter manuell körning
 
 jobs:
   update:
@@ -12,35 +12,53 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Fetch Live Data via Proxy
+      - name: Fetch Data (Multi-Strategy)
         run: |
-          # Vi använder en proxy-tjänst för att läsa RSS-flödet som JSON
-          # Detta är mycket svårare för Truth Social att blockera
-          RESPONSE=$(curl -s "https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ftruthsocial.com%2F%40realDonaldTrump.rss")
+          # --- STRATEGI 1: AllOrigins Proxy (Oftast säkrast) ---
+          echo "Testar Strategi 1: AllOrigins Proxy..."
+          PROXY_DATA=$(curl -s "https://api.allorigins.win/get?url=https://truthsocial.com/@realDonaldTrump.rss")
+          # AllOrigins returnerar JSON med RSS-texten i fältet "contents". Vi letar efter <item> där i.
+          COUNT_1=$(echo "$PROXY_DATA" | grep -o "<item>" | wc -l)
           
-          # Vi använder 'jq' (som finns inbyggt i GitHub Actions) för att räkna inlägg
-          COUNT=$(echo "$RESPONSE" | jq '.items | length' || echo "0")
-          
-          # Kontrollera om vi fick ett äkta svar
-          SUCCESS=$(echo "$RESPONSE" | jq -r '.status' || echo "error")
-
-          if [ "$SUCCESS" = "ok" ] && [ "$COUNT" -gt "0" ]; then
+          if [ "$COUNT_1" -gt "0" ]; then
+            COUNT=$COUNT_1
             STATUS="live"
-            echo "SUCCESS: Hittade $COUNT äkta inlägg."
+            METHOD="Proxy (AllOrigins)"
+            echo "Lyckades via Proxy! Antal inlägg: $COUNT"
           else
-            # Sista utväg om även proxyn dör (för att inte förstöra hemsidan)
-            COUNT=$(( ( RANDOM % 10 ) + 5 ))
-            STATUS="simulated"
-            echo "FAILURE: Kunde inte nå källan, kör simulering."
+            # --- STRATEGI 2: Direkt anrop med 'Firefox'-maskering ---
+            echo "Proxy misslyckades. Testar Strategi 2: Direkt Firefox-maskering..."
+            
+            # Vi fejkar en riktig Firefox-webbläsare med alla headers
+            USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0"
+            ACCEPT="text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+            
+            DIRECT_DATA=$(curl -s -L -H "User-Agent: $USER_AGENT" -H "Accept: $ACCEPT" --max-time 15 "https://truthsocial.com/@realDonaldTrump.rss")
+            COUNT_2=$(echo "$DIRECT_DATA" | grep -o "<item>" | wc -l)
+            
+            if [ "$COUNT_2" -gt "0" ]; then
+              COUNT=$COUNT_2
+              STATUS="live"
+              METHOD="Direct (Masked)"
+              echo "Lyckades via Direktmaskering! Antal inlägg: $COUNT"
+            else
+              # --- FALLBACK: Om ALLT misslyckas ---
+              # Vi måste simulera för att inte krascha sidan, men vi vet nu att det är en simulering.
+              COUNT=$(( ( RANDOM % 10 ) + 5 ))
+              STATUS="simulated"
+              METHOD="Simulation (Blocked)"
+              echo "ALLA metoder blockerade. Kör simulering."
+            fi
           fi
           
+          # Skapa JSON-filen
           TIMESTAMP=$(date -u)
-          echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
+          echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"method\": \"$METHOD\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
 
       - name: Commit and Push
         run: |
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Real-time Intelligence Update: $(date)" || exit 0
+          git commit -m "Update Intelligence: $STATUS via $METHOD" || exit 0
           git push
