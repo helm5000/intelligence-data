@@ -1,7 +1,7 @@
 name: Update Trump Data
 on:
   schedule:
-    - cron: '*/30 * * * *' # Körs var 30:e minut
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -19,74 +19,98 @@ jobs:
 
       - name: Fetch and Analyze Real Time Data
         run: |
-          # Vi skapar ett Python-script som hämtar datan och kollar klockan
           cat <<EOF > analyzer.py
           import urllib.request
           import json
           import datetime
-          from xml.dom import minidom
-          import time
           import random
+          import sys
+          from xml.dom import minidom
 
-          # Vi går via AllOrigins för att komma runt blockeringen
-          url = "https://api.allorigins.win/get?url=https://truthsocial.com/@realDonaldTrump.rss"
-          
+          # Vi definierar två olika vägar in (Proxies)
+          proxy_1 = "https://api.allorigins.win/get?url=https://truthsocial.com/@realDonaldTrump.rss"
+          proxy_2 = "https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ftruthsocial.com%2F%40realDonaldTrump.rss"
+
           post_count_last_hour = 0
-          status = "simulated" # Default om vi misslyckas
+          status = "estimated" # Startvärde
+          fetched_success = False
 
-          try:
-              # 1. Hämta datan
-              response = urllib.request.urlopen(url, timeout=10)
-              data = json.loads(response.read())
-              rss_content = data['contents']
-              
-              # 2. Läs RSS-XML
-              dom = minidom.parseString(rss_content)
-              items = dom.getElementsByTagName('item')
-              
-              # 3. Kolla tiden nu (UTC)
-              now = datetime.datetime.utcnow()
-              print(f"Nuvarande tid (UTC): {now}")
-              
-              real_count = 0
-              
-              for item in items:
-                  # Hämta datumet för inlägget
-                  pub_date_str = item.getElementsByTagName('pubDate')[0].firstChild.data
-                  # Formatet är oftast: "Fri, 09 Feb 2026 10:00:00 GMT"
-                  # Vi parsar detta
-                  try:
-                      # Försök tolka datumet
-                      pub_date = datetime.datetime.strptime(pub_date_str, "%a, %d %b %Y %H:%M:%S %Z")
-                  except:
-                      # Fallback om tidszonen strular (tar bort +0000 etc)
-                      pub_date = datetime.datetime.strptime(pub_date_str[:25], "%a, %d %b %Y %H:%M:%S")
+          now = datetime.datetime.utcnow()
+          print(f"Nuvarande tid (UTC): {now}")
 
-                  # Räkna skillnaden i tid
-                  diff = now - pub_date
-                  diff_minutes = diff.total_seconds() / 60
+          # --- FÖRSÖK 1: AllOrigins (XML) ---
+          if not fetched_success:
+              try:
+                  print("Testar Proxy 1 (AllOrigins)...")
+                  # Vi ger den 30 sekunder nu istället för 10
+                  req = urllib.request.Request(proxy_1, headers={'User-Agent': 'Mozilla/5.0'})
+                  response = urllib.request.urlopen(req, timeout=30)
+                  data = json.loads(response.read())
+                  rss_content = data['contents']
                   
-                  print(f"Inlägg från: {pub_date} ({int(diff_minutes)} minuter sedan)")
+                  # Tolka XML
+                  dom = minidom.parseString(rss_content)
+                  items = dom.getElementsByTagName('item')
                   
-                  if diff_minutes < 60:
-                      real_count += 1
+                  real_count = 0
+                  for item in items:
+                      try:
+                          pub_date_str = item.getElementsByTagName('pubDate')[0].firstChild.data
+                          # Klipp av tidszonen för att undvika format-fel
+                          pub_date = datetime.datetime.strptime(pub_date_str[:25], "%a, %d %b %Y %H:%M:%S")
+                          diff_minutes = (now - pub_date).total_seconds() / 60
+                          if diff_minutes < 60:
+                              real_count += 1
+                      except:
+                          continue # Hoppa över datum som inte går att läsa
 
-              # Om vi kom hit utan fel så har vi en ÄKTA siffra
-              post_count_last_hour = real_count
-              status = "live"
-              print(f"SUCCESS: Hittade {real_count} inlägg senaste timmen.")
+                  post_count_last_hour = real_count
+                  status = "live"
+                  fetched_success = True
+                  print(f"SUCCESS Proxy 1: Hittade {real_count} inlägg senaste timmen.")
 
-          except Exception as e:
-              print(f"FEL VID HÄMTNING: {e}")
-              # Om hämtningen misslyckas, kör vi vår simulerings-algoritm (Viktad slump)
-              roll = random.randint(0, 100)
-              if roll < 60: post_count_last_hour = 0
-              elif roll < 85: post_count_last_hour = random.randint(1, 2)
-              elif roll < 95: post_count_last_hour = random.randint(3, 4)
-              else: post_count_last_hour = random.randint(5, 9)
+              except Exception as e:
+                  print(f"Proxy 1 misslyckades: {e}")
+
+          # --- FÖRSÖK 2: RSS2JSON (JSON Backup) ---
+          if not fetched_success:
+              try:
+                  print("Testar Proxy 2 (RSS2JSON)...")
+                  req = urllib.request.Request(proxy_2, headers={'User-Agent': 'Mozilla/5.0'})
+                  response = urllib.request.urlopen(req, timeout=30)
+                  data = json.loads(response.read())
+                  
+                  real_count = 0
+                  if 'items' in data:
+                      for item in data['items']:
+                          try:
+                              pub_date_str = item['pubDate']
+                              pub_date = datetime.datetime.strptime(pub_date_str, "%Y-%m-%d %H:%M:%S")
+                              diff_minutes = (now - pub_date).total_seconds() / 60
+                              if diff_minutes < 60:
+                                  real_count += 1
+                          except:
+                              continue
+
+                  post_count_last_hour = real_count
+                  status = "live"
+                  fetched_success = True
+                  print(f"SUCCESS Proxy 2: Hittade {real_count} inlägg senaste timmen.")
+
+              except Exception as e:
+                  print(f"Proxy 2 misslyckades: {e}")
+
+          # --- OM BÅDA MISSLYCKAS: SIMULERING ---
+          if not fetched_success:
+              print("ALLA metoder blockerade/timeout. Kör simulering.")
               status = "estimated"
+              # Viktad slump: 70% chans för 0 inlägg (Tystnad är mest sannolikt)
+              roll = random.randint(0, 100)
+              if roll < 70: post_count_last_hour = 0
+              elif roll < 90: post_count_last_hour = 1
+              else: post_count_last_hour = random.randint(2, 5)
 
-          # Spara till JSON
+          # Spara data
           output = {
               "postCount": post_count_last_hour,
               "status": status,
@@ -97,7 +121,6 @@ jobs:
               json.dump(output, f)
           EOF
 
-          # Kör analysen
           python analyzer.py
 
       - name: Commit and Push
