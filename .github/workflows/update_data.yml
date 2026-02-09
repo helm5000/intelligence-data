@@ -2,44 +2,46 @@ name: Update Trump Data
 on:
   schedule:
     - cron: '*/30 * * * *' # Körs var 30:e minut
-  workflow_dispatch: # Tillåter dig att köra scriptet manuellt
+  workflow_dispatch: # Tillåter manuell körning
 
 jobs:
   update:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Ger GitHub Action rättighet att spara data.json
+      contents: write
     steps:
       - uses: actions/checkout@v3
 
       - name: Fetch and Process Data
         run: |
-          # Försök hämta RSS-flödet med en timeout på 10 sekunder
-          RAW_DATA=$(curl -s --max-time 10 https://truthsocial.com/@realDonaldTrump.rss || echo "")
+          # Vi använder -A för att maskera oss som en vanlig Chrome-webbläsare (User-Agent)
+          # och -L för att följa eventuella omdirigeringar.
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
           
-          # Räkna antalet <item> i XML-koden
+          RAW_DATA=$(curl -s -L -A "$USER_AGENT" --max-time 15 https://truthsocial.com/@realDonaldTrump.rss || echo "")
+          
+          # Räkna antalet inlägg (<item>)
           COUNT=$(echo "$RAW_DATA" | grep -c "<item>" || echo "0")
           
-          # Om COUNT är 0 betyder det oftast att vi blev blockerade eller att han inte postat något alls.
-          # Vi kollar om vi faktiskt fick ett svar (RAW_DATA är inte tom)
+          # Logik för status
           if [ "$COUNT" -gt "0" ]; then
             STATUS="live"
+            echo "Lyckades hämta live-data: $COUNT inlägg."
           else
-            # Om vi blev blockerade: Simulera ett trovärdigt president-brus (mellan 5 och 14 inlägg)
+            # Fallback: Om vi blockeras, generera ett tal mellan 5 och 14
             COUNT=$(( ( RANDOM % 10 ) + 5 ))
             STATUS="simulated"
+            echo "Blockerad eller ingen data. Kör simulerat läge: $COUNT inlägg."
           fi
           
           # Skapa JSON-filen
-          TIMESTAMP=$(date)
+          TIMESTAMP=$(date -u)
           echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
-          echo "Processad data: $COUNT inlägg, Status: $STATUS"
 
       - name: Commit and Push changes
         run: |
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          # Commit endast om filen faktiskt har ändrats, annars hoppa över (|| exit 0)
-          git commit -m "Automatisk uppdatering av intelligensindex: $(date)" || exit 0
+          git commit -m "Intelligence Index Update: $(date)" || exit 0
           git push
