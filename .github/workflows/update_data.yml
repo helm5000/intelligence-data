@@ -1,7 +1,7 @@
 name: Update Trump Data
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/30 * * * *' # Körs var 30:e minut
   workflow_dispatch:
 
 jobs:
@@ -12,46 +12,33 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Fetch Data via API Backdoor
+      - name: Fetch Data (Bulletproof Strategy)
         run: |
-          # Donald Trumps unika Account ID på Truth Social är: 107786274421298437
-          # Vi försöker hämta hans statusar direkt från Mastodon-API:et
+          # Vi försöker hämta via AllOrigins (en snäll proxy)
+          # "|| echo" gör att scriptet INTE kraschar om det misslyckas
+          RAW_DATA=$(curl -s --max-time 10 "https://api.allorigins.win/get?url=https://truthsocial.com/@realDonaldTrump.rss" || echo "")
           
-          # Vi måste ha väldigt specifika headers för att se ut som en riktig webbläsare
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          # Vi letar efter <item> i svaret
+          COUNT=$(echo "$RAW_DATA" | grep -o "<item>" | wc -l || echo "0")
           
-          echo "Försöker anropa API..."
-          
-          # -m 15 = max 15 sekunder
-          RESPONSE=$(curl -s -m 15 \
-            -H "User-Agent: $USER_AGENT" \
-            -H "Accept: application/json, text/plain, */*" \
-            -H "Referer: https://truthsocial.com/" \
-            "https://truthsocial.com/api/v1/accounts/107786274421298437/statuses?exclude_replies=true")
-          
-          # Kolla om vi fick ett svar som innehåller ordet "created_at" (som finns i alla inlägg)
-          CHECK=$(echo "$RESPONSE" | grep -c "created_at")
-
-          if [ "$CHECK" -gt "0" ]; then
-            # Vi kom in! Räkna antalet inlägg i JSON-svaret
-            # Vi räknar förekomsten av "id": vilket varje inlägg har
-            COUNT=$(echo "$RESPONSE" | grep -o "\"id\":" | wc -l)
+          # Logik: Om vi fick data -> LIVE. Annars -> ESTIMATED.
+          if [ "$COUNT" -gt "0" ]; then
             STATUS="live"
-            METHOD="API Backdoor"
-            echo "SUCCESS: Bakdörren öppen! Hittade $COUNT inlägg."
+            METHOD="Proxy Success"
+            echo "Lyckades! Äkta data hämtad: $COUNT inlägg."
           else
-            # Om vi blir blockade här också
-            echo "FAILURE: API-anrop blockerat eller tomt svar."
-            echo "Svar från server: $RESPONSE"
-            
-            # Simulera värde för att hålla sidan snygg
+            # Om vi blir blockade (vilket är troligt), simulera ett värde
+            # Slumptal mellan 5 och 14
             COUNT=$(( ( RANDOM % 10 ) + 5 ))
             STATUS="simulated"
-            METHOD="Simulation (Blocked)"
+            METHOD="Simulation (Blocked by Truth Social)"
+            echo "Kunde inte nå källan (IP Block). Kör simulering: $COUNT inlägg."
           fi
-
-          # Skapa JSON
+          
+          # Skapa tidsstämpel
           TIMESTAMP=$(date -u)
+          
+          # Spara JSON-filen som hemsidan läser
           echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"method\": \"$METHOD\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
 
       - name: Commit and Push
@@ -59,5 +46,6 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Update via API Backdoor" || exit 0
+          # Commit endast om något ändrats, krascha inte om det är tomt
+          git commit -m "Intelligence Update: $STATUS" || exit 0
           git push
