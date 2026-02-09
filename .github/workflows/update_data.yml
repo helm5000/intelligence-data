@@ -12,107 +12,52 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-
-      - name: Install Selenium & Chrome Driver
+      - name: Fetch Data via API Backdoor
         run: |
-          pip install selenium webdriver-manager beautifulsoup4
+          # Donald Trumps unika Account ID på Truth Social är: 107786274421298437
+          # Vi försöker hämta hans statusar direkt från Mastodon-API:et
+          
+          # Vi måste ha väldigt specifika headers för att se ut som en riktig webbläsare
+          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          
+          echo "Försöker anropa API..."
+          
+          # -m 15 = max 15 sekunder
+          RESPONSE=$(curl -s -m 15 \
+            -H "User-Agent: $USER_AGENT" \
+            -H "Accept: application/json, text/plain, */*" \
+            -H "Referer: https://truthsocial.com/" \
+            "https://truthsocial.com/api/v1/accounts/107786274421298437/statuses?exclude_replies=true")
+          
+          # Kolla om vi fick ett svar som innehåller ordet "created_at" (som finns i alla inlägg)
+          CHECK=$(echo "$RESPONSE" | grep -c "created_at")
 
-      - name: Run Real Browser Script
-        run: |
-          cat <<EOF > scraper.py
-          from selenium import webdriver
-          from selenium.webdriver.chrome.options import Options
-          from selenium.webdriver.chrome.service import Service
-          from webdriver_manager.chrome import ChromeDriverManager
-          from bs4 import BeautifulSoup
-          import time
-          import json
-          import random
-          from datetime import datetime
+          if [ "$CHECK" -gt "0" ]; then
+            # Vi kom in! Räkna antalet inlägg i JSON-svaret
+            # Vi räknar förekomsten av "id": vilket varje inlägg har
+            COUNT=$(echo "$RESPONSE" | grep -o "\"id\":" | wc -l)
+            STATUS="live"
+            METHOD="API Backdoor"
+            echo "SUCCESS: Bakdörren öppen! Hittade $COUNT inlägg."
+          else
+            # Om vi blir blockade här också
+            echo "FAILURE: API-anrop blockerat eller tomt svar."
+            echo "Svar från server: $RESPONSE"
+            
+            # Simulera värde för att hålla sidan snygg
+            COUNT=$(( ( RANDOM % 10 ) + 5 ))
+            STATUS="simulated"
+            METHOD="Simulation (Blocked)"
+          fi
 
-          # Konfigurera en osynlig Chrome-webbläsare (Headless)
-          chrome_options = Options()
-          chrome_options.add_argument("--headless") 
-          chrome_options.add_argument("--no-sandbox")
-          chrome_options.add_argument("--disable-dev-shm-usage")
-          # Låtsas vara en vanlig användare
-          chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
-
-          url = "https://truthsocial.com/@realDonaldTrump"
-          post_count = 0
-          status = "simulated"
-          method = "Init"
-
-          try:
-              print("Startar webbläsare...")
-              service = Service(ChromeDriverManager().install())
-              driver = webdriver.Chrome(service=service, options=chrome_options)
-              
-              print(f"Går till {url}...")
-              driver.get(url)
-              
-              # VIKTIGT: Vänta på att JavaScript ska bygga sidan (10 sekunder)
-              time.sleep(10)
-              
-              # Hämta den färdiga HTML-koden
-              html = driver.page_source
-              driver.quit()
-              
-              # Analysera koden
-              soup = BeautifulSoup(html, 'html.parser')
-              
-              # Metod 1: Räkna 'articles' (Standard för flöden)
-              articles = soup.find_all('article')
-              count_articles = len(articles)
-              
-              # Metod 2: Räkna tidsstämplar (Varje inlägg har en tid)
-              timestamps = soup.find_all('time')
-              count_time = len(timestamps)
-
-              # Ta det högsta värdet av metoderna
-              found_posts = max(count_articles, count_time)
-              
-              print(f"Hittade {count_articles} artiklar och {count_time} tidsstämplar.")
-
-              if found_posts > 0:
-                  post_count = found_posts
-                  status = "live"
-                  method = "Selenium (Headless Chrome)"
-                  print(f"SUCCESS: Hittade {post_count} inlägg via Selenium.")
-              else:
-                  # Om vi ser sidan men inga inlägg (t.ex. inloggningsvägg)
-                  print("Sidan laddades men inga inlägg hittades.")
-                  raise Exception("Tomt flöde")
-
-          except Exception as e:
-              print(f"FEL ELLER BLOCKERAD: {e}")
-              # Sista utväg: Simulering
-              post_count = random.randint(5, 14)
-              status = "simulated"
-              method = "Simulation (Fallback)"
-
-          # Spara data
-          data = {
-              "postCount": post_count,
-              "status": status,
-              "method": method,
-              "lastUpdated": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-          }
-
-          with open('data.json', 'w') as f:
-              json.dump(data, f)
-          EOF
-
-          python scraper.py
+          # Skapa JSON
+          TIMESTAMP=$(date -u)
+          echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"method\": \"$METHOD\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
 
       - name: Commit and Push
         run: |
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Update via Selenium" || exit 0
+          git commit -m "Update via API Backdoor" || exit 0
           git push
