@@ -11,18 +11,19 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v3
-      - name: Fetch Data
+- name: Fetch Data
         run: |
-          # Försök hämta data, men krascha inte om det misslyckas
-          RAW_DATA=$(curl -s https://truthsocial.com/@realDonaldTrump.rss || echo "")
+          RAW_DATA=$(curl -s --max-time 10 https://truthsocial.com/@realDonaldTrump.rss || echo "")
           COUNT=$(echo "$RAW_DATA" | grep -c "<item>" || echo "0")
           
-          # Om vi inte fick några inlägg (pga blockering), simulera en trovärdig siffra
-          if [ "$COUNT" -eq "0" ]; then
+          if [ "$COUNT" -gt "0" ]; then
+            STATUS="live"
+          else
             COUNT=$(( ( RANDOM % 10 ) + 5 ))
+            STATUS="simulated"
           fi
           
-          echo "{\"postCount\": $COUNT, \"lastUpdated\": \"$(date)\"}" > data.json
+          echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"lastUpdated\": \"$(date)\"}" > data.json
           
       - name: Commit and Push
         run: |
