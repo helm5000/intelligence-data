@@ -2,7 +2,7 @@ name: Update Trump Data
 on:
   schedule:
     - cron: '*/30 * * * *' # Körs var 30:e minut
-  workflow_dispatch: # Tillåter manuell körning
+  workflow_dispatch: # Manuell start
 
 jobs:
   update:
@@ -12,53 +12,78 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Fetch Data (Multi-Strategy)
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install CloudScraper
         run: |
-          # --- STRATEGI 1: AllOrigins Proxy (Oftast säkrast) ---
-          echo "Testar Strategi 1: AllOrigins Proxy..."
-          PROXY_DATA=$(curl -s "https://api.allorigins.win/get?url=https://truthsocial.com/@realDonaldTrump.rss")
-          # AllOrigins returnerar JSON med RSS-texten i fältet "contents". Vi letar efter <item> där i.
-          COUNT_1=$(echo "$PROXY_DATA" | grep -o "<item>" | wc -l)
-          
-          if [ "$COUNT_1" -gt "0" ]; then
-            COUNT=$COUNT_1
-            STATUS="live"
-            METHOD="Proxy (AllOrigins)"
-            echo "Lyckades via Proxy! Antal inlägg: $COUNT"
-          else
-            # --- STRATEGI 2: Direkt anrop med 'Firefox'-maskering ---
-            echo "Proxy misslyckades. Testar Strategi 2: Direkt Firefox-maskering..."
-            
-            # Vi fejkar en riktig Firefox-webbläsare med alla headers
-            USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0"
-            ACCEPT="text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
-            
-            DIRECT_DATA=$(curl -s -L -H "User-Agent: $USER_AGENT" -H "Accept: $ACCEPT" --max-time 15 "https://truthsocial.com/@realDonaldTrump.rss")
-            COUNT_2=$(echo "$DIRECT_DATA" | grep -o "<item>" | wc -l)
-            
-            if [ "$COUNT_2" -gt "0" ]; then
-              COUNT=$COUNT_2
-              STATUS="live"
-              METHOD="Direct (Masked)"
-              echo "Lyckades via Direktmaskering! Antal inlägg: $COUNT"
-            else
-              # --- FALLBACK: Om ALLT misslyckas ---
-              # Vi måste simulera för att inte krascha sidan, men vi vet nu att det är en simulering.
-              COUNT=$(( ( RANDOM % 10 ) + 5 ))
-              STATUS="simulated"
-              METHOD="Simulation (Blocked)"
-              echo "ALLA metoder blockerade. Kör simulering."
-            fi
-          fi
-          
-          # Skapa JSON-filen
-          TIMESTAMP=$(date -u)
-          echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"method\": \"$METHOD\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
+          pip install cloudscraper beautifulsoup4
+
+      - name: Run Scraper Script
+        run: |
+          # Vi skapar ett Python-script direkt här i YAML-filen för att slippa ladda upp fler filer
+          cat <<EOF > scraper.py
+          import cloudscraper
+          import json
+          import random
+          from datetime import datetime
+          from bs4 import BeautifulSoup
+
+          # URL till profilen (vi skrapar profilen istället för RSS då den är oftare öppen)
+          url = "https://truthsocial.com/@realDonaldTrump"
+
+          try:
+              # Skapa en scraper som lurar Cloudflare
+              scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+              html = scraper.get(url).text
+              
+              # Använd BeautifulSoup för att räkna inlägg
+              soup = BeautifulSoup(html, 'html.parser')
+              
+              # Vi letar efter antalet "cards" eller artiklar. 
+              # Truth Socials struktur ändras ibland, så vi räknar förekomsten av inläggs-länkar
+              # Detta är en grov men effektiv metod
+              post_count = html.count('data-testid="status-link"')
+              
+              # Om vi inte hittar den specifika taggen, försök räkna 'article' taggar
+              if post_count == 0:
+                  post_count = len(soup.find_all('article'))
+
+              if post_count > 0:
+                  status = "live"
+                  method = "CloudScraper (Python)"
+                  print(f"SUCCESS: Hittade {post_count} inlägg via CloudScraper.")
+              else:
+                  raise Exception("Inga inlägg hittades (troligen blockad eller ändrad layout).")
+
+          except Exception as e:
+              print(f"BLOCKERAD: {e}")
+              # Fallback-logik om även CloudScraper misslyckas
+              post_count = random.randint(5, 14)
+              status = "simulated"
+              method = "Simulation (Blocked)"
+
+          # Spara till JSON
+          data = {
+              "postCount": post_count,
+              "status": status,
+              "method": method,
+              "lastUpdated": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+          }
+
+          with open('data.json', 'w') as f:
+              json.dump(data, f)
+          EOF
+
+          # Kör scriptet vi nyss skapade
+          python scraper.py
 
       - name: Commit and Push
         run: |
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Update Intelligence: $STATUS via $METHOD" || exit 0
+          git commit -m "Python Intelligence Update" || exit 0
           git push
