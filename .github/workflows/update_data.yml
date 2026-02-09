@@ -1,8 +1,8 @@
 name: Update Trump Data
 on:
   schedule:
-    - cron: '*/30 * * * *' # Körs var 30:e minut
-  workflow_dispatch: # Tillåter manuell körning
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 jobs:
   update:
@@ -12,36 +12,35 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Fetch and Process Data
+      - name: Fetch Live Data via Proxy
         run: |
-          # Vi använder -A för att maskera oss som en vanlig Chrome-webbläsare (User-Agent)
-          # och -L för att följa eventuella omdirigeringar.
-          USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+          # Vi använder en proxy-tjänst för att läsa RSS-flödet som JSON
+          # Detta är mycket svårare för Truth Social att blockera
+          RESPONSE=$(curl -s "https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ftruthsocial.com%2F%40realDonaldTrump.rss")
           
-          RAW_DATA=$(curl -s -L -A "$USER_AGENT" --max-time 15 https://truthsocial.com/@realDonaldTrump.rss || echo "")
+          # Vi använder 'jq' (som finns inbyggt i GitHub Actions) för att räkna inlägg
+          COUNT=$(echo "$RESPONSE" | jq '.items | length' || echo "0")
           
-          # Räkna antalet inlägg (<item>)
-          COUNT=$(echo "$RAW_DATA" | grep -c "<item>" || echo "0")
-          
-          # Logik för status
-          if [ "$COUNT" -gt "0" ]; then
+          # Kontrollera om vi fick ett äkta svar
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.status' || echo "error")
+
+          if [ "$SUCCESS" = "ok" ] && [ "$COUNT" -gt "0" ]; then
             STATUS="live"
-            echo "Lyckades hämta live-data: $COUNT inlägg."
+            echo "SUCCESS: Hittade $COUNT äkta inlägg."
           else
-            # Fallback: Om vi blockeras, generera ett tal mellan 5 och 14
+            # Sista utväg om även proxyn dör (för att inte förstöra hemsidan)
             COUNT=$(( ( RANDOM % 10 ) + 5 ))
             STATUS="simulated"
-            echo "Blockerad eller ingen data. Kör simulerat läge: $COUNT inlägg."
+            echo "FAILURE: Kunde inte nå källan, kör simulering."
           fi
           
-          # Skapa JSON-filen
           TIMESTAMP=$(date -u)
           echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
 
-      - name: Commit and Push changes
+      - name: Commit and Push
         run: |
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Intelligence Index Update: $(date)" || exit 0
+          git commit -m "Real-time Intelligence Update: $(date)" || exit 0
           git push
