@@ -1,8 +1,8 @@
 name: Update Trump Data
 on:
   schedule:
-    - cron: '*/30 * * * *' # Körs var 30:e minut
-  workflow_dispatch: # Manuell start
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 jobs:
   update:
@@ -17,55 +17,85 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install CloudScraper
+      - name: Install Selenium & Chrome Driver
         run: |
-          pip install cloudscraper beautifulsoup4
+          pip install selenium webdriver-manager beautifulsoup4
 
-      - name: Run Scraper Script
+      - name: Run Real Browser Script
         run: |
-          # Vi skapar ett Python-script direkt här i YAML-filen för att slippa ladda upp fler filer
           cat <<EOF > scraper.py
-          import cloudscraper
+          from selenium import webdriver
+          from selenium.webdriver.chrome.options import Options
+          from selenium.webdriver.chrome.service import Service
+          from webdriver_manager.chrome import ChromeDriverManager
+          from bs4 import BeautifulSoup
+          import time
           import json
           import random
           from datetime import datetime
-          from bs4 import BeautifulSoup
 
-          # URL till profilen (vi skrapar profilen istället för RSS då den är oftare öppen)
+          # Konfigurera en osynlig Chrome-webbläsare (Headless)
+          chrome_options = Options()
+          chrome_options.add_argument("--headless") 
+          chrome_options.add_argument("--no-sandbox")
+          chrome_options.add_argument("--disable-dev-shm-usage")
+          # Låtsas vara en vanlig användare
+          chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
+
           url = "https://truthsocial.com/@realDonaldTrump"
+          post_count = 0
+          status = "simulated"
+          method = "Init"
 
           try:
-              # Skapa en scraper som lurar Cloudflare
-              scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
-              html = scraper.get(url).text
+              print("Startar webbläsare...")
+              service = Service(ChromeDriverManager().install())
+              driver = webdriver.Chrome(service=service, options=chrome_options)
               
-              # Använd BeautifulSoup för att räkna inlägg
+              print(f"Går till {url}...")
+              driver.get(url)
+              
+              # VIKTIGT: Vänta på att JavaScript ska bygga sidan (10 sekunder)
+              time.sleep(10)
+              
+              # Hämta den färdiga HTML-koden
+              html = driver.page_source
+              driver.quit()
+              
+              # Analysera koden
               soup = BeautifulSoup(html, 'html.parser')
               
-              # Vi letar efter antalet "cards" eller artiklar. 
-              # Truth Socials struktur ändras ibland, så vi räknar förekomsten av inläggs-länkar
-              # Detta är en grov men effektiv metod
-              post_count = html.count('data-testid="status-link"')
+              # Metod 1: Räkna 'articles' (Standard för flöden)
+              articles = soup.find_all('article')
+              count_articles = len(articles)
               
-              # Om vi inte hittar den specifika taggen, försök räkna 'article' taggar
-              if post_count == 0:
-                  post_count = len(soup.find_all('article'))
+              # Metod 2: Räkna tidsstämplar (Varje inlägg har en tid)
+              timestamps = soup.find_all('time')
+              count_time = len(timestamps)
 
-              if post_count > 0:
+              # Ta det högsta värdet av metoderna
+              found_posts = max(count_articles, count_time)
+              
+              print(f"Hittade {count_articles} artiklar och {count_time} tidsstämplar.")
+
+              if found_posts > 0:
+                  post_count = found_posts
                   status = "live"
-                  method = "CloudScraper (Python)"
-                  print(f"SUCCESS: Hittade {post_count} inlägg via CloudScraper.")
+                  method = "Selenium (Headless Chrome)"
+                  print(f"SUCCESS: Hittade {post_count} inlägg via Selenium.")
               else:
-                  raise Exception("Inga inlägg hittades (troligen blockad eller ändrad layout).")
+                  # Om vi ser sidan men inga inlägg (t.ex. inloggningsvägg)
+                  print("Sidan laddades men inga inlägg hittades.")
+                  raise Exception("Tomt flöde")
 
           except Exception as e:
-              print(f"BLOCKERAD: {e}")
-              # Fallback-logik om även CloudScraper misslyckas
+              print(f"FEL ELLER BLOCKERAD: {e}")
+              # Sista utväg: Simulering
               post_count = random.randint(5, 14)
               status = "simulated"
-              method = "Simulation (Blocked)"
+              method = "Simulation (Fallback)"
 
-          # Spara till JSON
+          # Spara data
           data = {
               "postCount": post_count,
               "status": status,
@@ -77,7 +107,6 @@ jobs:
               json.dump(data, f)
           EOF
 
-          # Kör scriptet vi nyss skapade
           python scraper.py
 
       - name: Commit and Push
@@ -85,5 +114,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Python Intelligence Update" || exit 0
+          git commit -m "Update via Selenium" || exit 0
           git push
