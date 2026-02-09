@@ -1,7 +1,7 @@
 name: Update Trump Data
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/30 * * * *' # Körs var 30:e minut
   workflow_dispatch:
 
 jobs:
@@ -26,85 +26,83 @@ jobs:
           import random
           import sys
           from xml.dom import minidom
+          import ssl
 
-          # Vi definierar två olika vägar in (Proxies)
-          proxy_1 = "https://api.allorigins.win/get?url=https://truthsocial.com/@realDonaldTrump.rss"
-          proxy_2 = "https://api.rss2json.com/v1/api.json?rss_url=https%3A%2F%2Ftruthsocial.com%2F%40realDonaldTrump.rss"
+          # Vi stänger av SSL-verifiering för att undvika handskaknings-problem med vissa proxys
+          ssl._create_default_https_context = ssl._create_unverified_context
+
+          # NY STRATEGI: RSSHub
+          # Detta är en specialist-tjänst för sociala medier
+          rss_url = "https://rsshub.app/truthsocial/account/realDonaldTrump"
 
           post_count_last_hour = 0
-          status = "estimated" # Startvärde
+          status = "estimated"
           fetched_success = False
 
           now = datetime.datetime.utcnow()
           print(f"Nuvarande tid (UTC): {now}")
 
-          # --- FÖRSÖK 1: AllOrigins (XML) ---
-          if not fetched_success:
-              try:
-                  print("Testar Proxy 1 (AllOrigins)...")
-                  # Vi ger den 30 sekunder nu istället för 10
-                  req = urllib.request.Request(proxy_1, headers={'User-Agent': 'Mozilla/5.0'})
-                  response = urllib.request.urlopen(req, timeout=30)
-                  data = json.loads(response.read())
-                  rss_content = data['contents']
-                  
-                  # Tolka XML
-                  dom = minidom.parseString(rss_content)
-                  items = dom.getElementsByTagName('item')
-                  
-                  real_count = 0
-                  for item in items:
+          try:
+              print(f"Testar RSSHub: {rss_url} ...")
+              
+              # Vi maskerar oss som en vanlig läsare
+              req = urllib.request.Request(
+                  rss_url, 
+                  headers={
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                  }
+              )
+              
+              # 30 sekunders timeout
+              response = urllib.request.urlopen(req, timeout=30)
+              rss_content = response.read()
+              
+              # Försök parsa XML
+              dom = minidom.parseString(rss_content)
+              items = dom.getElementsByTagName('item')
+              
+              real_count = 0
+              print(f"Hittade {len(items)} inlägg totalt i flödet.")
+
+              for item in items:
+                  try:
+                      # RSSHub använder oftast standard pubDate
+                      pub_date_str = item.getElementsByTagName('pubDate')[0].firstChild.data
+                      # Exempel: "Mon, 09 Feb 2026 15:00:00 GMT"
+                      # Vi försöker parsa det
                       try:
-                          pub_date_str = item.getElementsByTagName('pubDate')[0].firstChild.data
-                          # Klipp av tidszonen för att undvika format-fel
-                          pub_date = datetime.datetime.strptime(pub_date_str[:25], "%a, %d %b %Y %H:%M:%S")
-                          diff_minutes = (now - pub_date).total_seconds() / 60
-                          if diff_minutes < 60:
-                              real_count += 1
+                          pub_date = datetime.datetime.strptime(pub_date_str, "%a, %d %b %Y %H:%M:%S %Z")
                       except:
-                          continue # Hoppa över datum som inte går att läsa
+                          pub_date = datetime.datetime.strptime(pub_date_str[:25], "%a, %d %b %Y %H:%M:%S")
 
-                  post_count_last_hour = real_count
-                  status = "live"
-                  fetched_success = True
-                  print(f"SUCCESS Proxy 1: Hittade {real_count} inlägg senaste timmen.")
+                      # Ta bort tidszon-info för att jämföra med UTC now
+                      pub_date = pub_date.replace(tzinfo=None)
 
-              except Exception as e:
-                  print(f"Proxy 1 misslyckades: {e}")
+                      diff = now - pub_date
+                      diff_minutes = diff.total_seconds() / 60
+                      
+                      print(f"Inlägg: {pub_date} ({int(diff_minutes)} min sedan)")
 
-          # --- FÖRSÖK 2: RSS2JSON (JSON Backup) ---
+                      if diff_minutes < 60:
+                          real_count += 1
+                  except Exception as e:
+                      print(f"Kunde inte läsa datum på ett inlägg: {e}")
+                      continue
+
+              post_count_last_hour = real_count
+              status = "live"
+              fetched_success = True
+              print(f"SUCCESS: Hittade {real_count} inlägg senaste timmen.")
+
+          except Exception as e:
+              print(f"RSSHub misslyckades: {e}")
+              # Om vi får 403 Forbidden eller liknande så vet vi att även RSSHub är blockad
+
+          # --- FALLBACK SIMULERING (Om RSSHub är blockad) ---
           if not fetched_success:
-              try:
-                  print("Testar Proxy 2 (RSS2JSON)...")
-                  req = urllib.request.Request(proxy_2, headers={'User-Agent': 'Mozilla/5.0'})
-                  response = urllib.request.urlopen(req, timeout=30)
-                  data = json.loads(response.read())
-                  
-                  real_count = 0
-                  if 'items' in data:
-                      for item in data['items']:
-                          try:
-                              pub_date_str = item['pubDate']
-                              pub_date = datetime.datetime.strptime(pub_date_str, "%Y-%m-%d %H:%M:%S")
-                              diff_minutes = (now - pub_date).total_seconds() / 60
-                              if diff_minutes < 60:
-                                  real_count += 1
-                          except:
-                              continue
-
-                  post_count_last_hour = real_count
-                  status = "live"
-                  fetched_success = True
-                  print(f"SUCCESS Proxy 2: Hittade {real_count} inlägg senaste timmen.")
-
-              except Exception as e:
-                  print(f"Proxy 2 misslyckades: {e}")
-
-          # --- OM BÅDA MISSLYCKAS: SIMULERING ---
-          if not fetched_success:
-              print("ALLA metoder blockerade/timeout. Kör simulering.")
+              print("Kör simulering (Blockerad av Truth Social).")
               status = "estimated"
-              # Viktad slump: 70% chans för 0 inlägg (Tystnad är mest sannolikt)
+              # Din snygga viktade slump: 70% chans för tystnad
               roll = random.randint(0, 100)
               if roll < 70: post_count_last_hour = 0
               elif roll < 90: post_count_last_hour = 1
@@ -128,5 +126,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Real-time Intelligence Analysis" || exit 0
+          git commit -m "RSSHub Analysis" || exit 0
           git push
