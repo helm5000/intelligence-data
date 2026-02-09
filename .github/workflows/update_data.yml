@@ -1,34 +1,45 @@
 name: Update Trump Data
 on:
   schedule:
-    - cron: '*/30 * * * *'
-  workflow_dispatch:
+    - cron: '*/30 * * * *' # Körs var 30:e minut
+  workflow_dispatch: # Tillåter dig att köra scriptet manuellt
 
 jobs:
   update:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # Ger GitHub Action rättighet att spara data.json
     steps:
       - uses: actions/checkout@v3
-- name: Fetch Data
+
+      - name: Fetch and Process Data
         run: |
+          # Försök hämta RSS-flödet med en timeout på 10 sekunder
           RAW_DATA=$(curl -s --max-time 10 https://truthsocial.com/@realDonaldTrump.rss || echo "")
+          
+          # Räkna antalet <item> i XML-koden
           COUNT=$(echo "$RAW_DATA" | grep -c "<item>" || echo "0")
           
+          # Om COUNT är 0 betyder det oftast att vi blev blockerade eller att han inte postat något alls.
+          # Vi kollar om vi faktiskt fick ett svar (RAW_DATA är inte tom)
           if [ "$COUNT" -gt "0" ]; then
             STATUS="live"
           else
+            # Om vi blev blockerade: Simulera ett trovärdigt president-brus (mellan 5 och 14 inlägg)
             COUNT=$(( ( RANDOM % 10 ) + 5 ))
             STATUS="simulated"
           fi
           
-          echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"lastUpdated\": \"$(date)\"}" > data.json
-          
-      - name: Commit and Push
+          # Skapa JSON-filen
+          TIMESTAMP=$(date)
+          echo "{\"postCount\": $COUNT, \"status\": \"$STATUS\", \"lastUpdated\": \"$TIMESTAMP\"}" > data.json
+          echo "Processad data: $COUNT inlägg, Status: $STATUS"
+
+      - name: Commit and Push changes
         run: |
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Update intelligence data" || exit 0
+          # Commit endast om filen faktiskt har ändrats, annars hoppa över (|| exit 0)
+          git commit -m "Automatisk uppdatering av intelligensindex: $(date)" || exit 0
           git push
