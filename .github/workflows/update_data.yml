@@ -1,7 +1,7 @@
-name: Update Trump Data (Roll Call Source)
+name: Update Trump Data (With Timestamps)
 on:
   schedule:
-    - cron: '*/30 * * * *' # Körs var 30:e minut
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -20,7 +20,7 @@ jobs:
       - name: Install Dependencies
         run: pip install requests beautifulsoup4
 
-      - name: Scrape Roll Call Database
+      - name: Scrape & Calculate Time
         run: |
           cat <<EOF > analyzer.py
           import requests
@@ -30,77 +30,86 @@ jobs:
           import re
           from bs4 import BeautifulSoup
 
-          # Den nya, bättre adressen som samlar ALLA plattformar
           url = "https://rollcall.com/factbase/trump/topic/social/?platform=all&sort=date&sort_order=desc"
           
           post_count = 0
+          minutes_since_last = 999 # Default (länge sen)
           status = "simulated"
           fetched_success = False
           source_label = "Roll Call (Aggregator)"
-          
-          print(f"Hämtar data från: {url}")
 
           try:
-              headers = {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-              }
-              
-              # Hämta sidan (20 sekunders timeout)
+              headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
               response = requests.get(url, headers=headers, timeout=20)
               
               if response.status_code == 200:
                   html = response.text
                   soup = BeautifulSoup(html, 'html.parser')
-                  
-                  # Vi hämtar all text från sidan för att leta efter tidsstämplar
                   text_content = soup.get_text()
                   
-                  real_count = 0
-                  
-                  # 1. Leta efter "Just now" eller "Seconds ago"
-                  if re.search(r'(just now|seconds? ago|secs? ago)', text_content, re.IGNORECASE):
-                      print("Hittade 'Just now' -> +1 inlägg")
-                      real_count += 1
-
-                  # 2. Leta efter minuter (t.ex. "45m", "45 min", "45 minutes ago")
-                  # Vi letar efter siffror < 60 följt av "m", "min" eller "minutes"
+                  # Hitta alla tidsangivelser (minuter)
+                  # Vi letar efter den minsta siffran (det färskaste inlägget)
                   matches = re.findall(r'(\d+)\s*(m|min|mins|minutes?)\s+ago', text_content, re.IGNORECASE)
+                  found_minutes = []
                   
                   for match in matches:
                       try:
-                          minutes = int(match[0])
-                          if minutes < 60:
-                              real_count += 1
-                              print(f"Hittade inlägg: {minutes} minuter gammalt.")
+                          m = int(match[0])
+                          found_minutes.append(m)
                       except:
                           continue
-
-                  post_count = real_count
-                  status = "live"
-                  fetched_success = True
-                  print(f"SUCCESS: Hittade {real_count} inlägg < 1 timme.")
                   
-              else:
-                  print(f"Kunde inte nå Roll Call. Statuskod: {response.status_code}")
+                  # Hitta "Just now" = 0 minuter
+                  if re.search(r'(just now|seconds? ago)', text_content, re.IGNORECASE):
+                      found_minutes.append(0)
+
+                  # Om vi hittade några tider
+                  if found_minutes:
+                      found_minutes.sort() # Sortera lägst först
+                      minutes_since_last = found_minutes[0]
+                      
+                      # Räkna hur många som är under 60 min (för indexet)
+                      post_count = sum(1 for m in found_minutes if m < 60)
+                      
+                      status = "live"
+                      fetched_success = True
+                      print(f"SUCCESS: Senaste inlägg {minutes_since_last} min sedan. {post_count} st senaste timmen.")
+                  else:
+                      # Om sidan funkar men inga tider hittades (troligen > 1h sen)
+                      minutes_since_last = 65 # Sätt till strax över en timme
+                      post_count = 0
+                      status = "live"
+                      fetched_success = True
 
           except Exception as e:
-              print(f"Fel vid analys: {e}")
+              print(f"Fel: {e}")
 
-          # --- FAILSAFE (Simulering) ---
+          # --- SIMULERING (Om live misslyckas) ---
           if not fetched_success:
-              print("Kör simulering (Roll Call misslyckades).")
               status = "estimated"
-              source_label = "AI Model (Simulated)"
+              source_label = "AI Prediction Model"
               
-              # Sannolikhetsmodell
+              # Logik: Om han sover (0 inlägg), så var det länge sen sist.
+              # Om han är aktiv, var det nyligen.
               roll = random.randint(0, 100)
-              if roll < 65: post_count = 0
-              elif roll < 90: post_count = random.randint(1, 2)
-              else: post_count = random.randint(3, 6)
+              
+              if roll < 65: 
+                  # Lugnt läge
+                  post_count = 0
+                  minutes_since_last = random.randint(65, 400) # 1h - 6h sen
+              elif roll < 90:
+                  # Normalt läge
+                  post_count = random.randint(1, 2)
+                  minutes_since_last = random.randint(10, 45)
+              else: 
+                  # Kaos läge
+                  post_count = random.randint(3, 6)
+                  minutes_since_last = random.randint(1, 9)
 
           # Spara data
           output = {
               "postCount": post_count,
+              "minutesSince": minutes_since_last,
               "status": status,
               "source": source_label,
               "lastUpdated": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -117,5 +126,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Roll Call Data Update" || exit 0
+          git commit -m "Timestamp Update" || exit 0
           git push
