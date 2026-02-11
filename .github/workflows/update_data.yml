@@ -1,4 +1,4 @@
-name: Update Trump Data (Factba.se Source)
+name: Update Trump Data (Roll Call Source)
 on:
   schedule:
     - cron: '*/30 * * * *' # Körs var 30:e minut
@@ -18,9 +18,9 @@ jobs:
           python-version: '3.9'
 
       - name: Install Dependencies
-        run: pip install beautifulsoup4 requests
+        run: pip install requests beautifulsoup4
 
-      - name: Scrape Aggregator
+      - name: Scrape Roll Call Database
         run: |
           cat <<EOF > analyzer.py
           import requests
@@ -30,74 +30,69 @@ jobs:
           import re
           from bs4 import BeautifulSoup
 
-          # Målet: Factba.se's specifika sida för Truth Social
-          url = "https://factba.se/topic/truth-social"
+          # Den nya, bättre adressen som samlar ALLA plattformar
+          url = "https://rollcall.com/factbase/trump/topic/social/?platform=all&sort=date&sort_order=desc"
           
           post_count = 0
-          status = "simulated" # Default om det skiter sig
+          status = "simulated"
           fetched_success = False
+          source_label = "Roll Call (Aggregator)"
           
-          print(f"Försöker hämta från biblioteket: {url}")
+          print(f"Hämtar data från: {url}")
 
           try:
-              # Vi maskerar oss som en vanlig Chrome-användare
               headers = {
                   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
               }
               
-              # Hämta sidan (15 sekunders timeout)
-              response = requests.get(url, headers=headers, timeout=15)
+              # Hämta sidan (20 sekunders timeout)
+              response = requests.get(url, headers=headers, timeout=20)
               
               if response.status_code == 200:
                   html = response.text
                   soup = BeautifulSoup(html, 'html.parser')
                   
-                  # STRATEGI: Leta efter tidsstämplar i texten
-                  # Factba.se skriver ofta "14 mins ago" eller "X minutes ago"
-                  
-                  # Vi letar efter alla textsnuttar som innehåller "ago"
-                  # Detta är en "grov" metod men väldigt effektiv
-                  all_texts = soup.get_text()
-                  
-                  # Regex för att hitta "X mins ago" eller "X minutes ago"
-                  # Vi letar efter siffror följt av 'min' eller 'minute'
-                  matches = re.findall(r'(\d+)\s+(min|minute)', all_texts, re.IGNORECASE)
+                  # Vi hämtar all text från sidan för att leta efter tidsstämplar
+                  text_content = soup.get_text()
                   
                   real_count = 0
-                  print(f"Hittade {len(matches)} tidsstämplar totalt (minuter). Analyserar...")
+                  
+                  # 1. Leta efter "Just now" eller "Seconds ago"
+                  if re.search(r'(just now|seconds? ago|secs? ago)', text_content, re.IGNORECASE):
+                      print("Hittade 'Just now' -> +1 inlägg")
+                      real_count += 1
 
+                  # 2. Leta efter minuter (t.ex. "45m", "45 min", "45 minutes ago")
+                  # Vi letar efter siffror < 60 följt av "m", "min" eller "minutes"
+                  matches = re.findall(r'(\d+)\s*(m|min|mins|minutes?)\s+ago', text_content, re.IGNORECASE)
+                  
                   for match in matches:
                       try:
-                          # match[0] är siffran (t.ex. "45")
-                          minutes_ago = int(match[0])
-                          
-                          # Vi bryr oss bara om det var mindre än 60 minuter sedan
-                          if minutes_ago < 60:
+                          minutes = int(match[0])
+                          if minutes < 60:
                               real_count += 1
-                              print(f" -> Hittade ett färskt inlägg: {minutes_ago} minuter gammalt.")
+                              print(f"Hittade inlägg: {minutes} minuter gammalt.")
                       except:
                           continue
 
-                  # Om vi hittade några matches, eller om sidan laddades korrekt men var tom på "mins ago"
-                  # (vilket betyder att inget skrivits senaste timmen), så räknas det som SUCCESS.
-                  
                   post_count = real_count
                   status = "live"
                   fetched_success = True
                   print(f"SUCCESS: Hittade {real_count} inlägg < 1 timme.")
                   
               else:
-                  print(f"Kunde inte nå Factba.se. Status: {response.status_code}")
+                  print(f"Kunde inte nå Roll Call. Statuskod: {response.status_code}")
 
           except Exception as e:
-              print(f"Fel vid skrapning: {e}")
+              print(f"Fel vid analys: {e}")
 
-          # --- SÄKERHETSNÄT (SIMULERING) ---
+          # --- FAILSAFE (Simulering) ---
           if not fetched_success:
-              print("Kör simulering (Factba.se misslyckades).")
+              print("Kör simulering (Roll Call misslyckades).")
               status = "estimated"
+              source_label = "AI Model (Simulated)"
               
-              # Din snygga sannolikhetsmodell
+              # Sannolikhetsmodell
               roll = random.randint(0, 100)
               if roll < 65: post_count = 0
               elif roll < 90: post_count = random.randint(1, 2)
@@ -107,7 +102,7 @@ jobs:
           output = {
               "postCount": post_count,
               "status": status,
-              "source": "Factba.se Aggregator",
+              "source": source_label,
               "lastUpdated": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
           }
 
@@ -122,5 +117,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Factba.se Update" || exit 0
+          git commit -m "Roll Call Data Update" || exit 0
           git push
