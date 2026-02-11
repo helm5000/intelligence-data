@@ -1,7 +1,7 @@
-name: Update Trump Data (With Timestamps)
+name: Update Trump Data (Date Parser)
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/30 * * * *' # Körs var 30:e minut
   workflow_dispatch:
 
 jobs:
@@ -30,13 +30,16 @@ jobs:
           import re
           from bs4 import BeautifulSoup
 
+          # Adressen till databasen
           url = "https://rollcall.com/factbase/trump/topic/social/?platform=all&sort=date&sort_order=desc"
           
           post_count = 0
-          minutes_since_last = 999 # Default (länge sen)
+          minutes_since_last = 999
           status = "simulated"
           fetched_success = False
           source_label = "Roll Call (Aggregator)"
+
+          print(f"Hämtar data från: {url}")
 
           try:
               headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -47,62 +50,83 @@ jobs:
                   soup = BeautifulSoup(html, 'html.parser')
                   text_content = soup.get_text()
                   
-                  # Hitta alla tidsangivelser (minuter)
-                  # Vi letar efter den minsta siffran (det färskaste inlägget)
-                  matches = re.findall(r'(\d+)\s*(m|min|mins|minutes?)\s+ago', text_content, re.IGNORECASE)
                   found_minutes = []
+                  now_utc = datetime.datetime.utcnow()
                   
-                  for match in matches:
+                  # --- METOD 1: Leta efter datumformatet "February 11, 2026 @ 6:16 AM ET" ---
+                  # Regex för att hitta datumsträngen
+                  date_matches = re.findall(r'([A-Z][a-z]+ \d{1,2}, \d{4} @ \d{1,2}:\d{2} [AP]M ET)', text_content)
+                  
+                  print(f"Hittade {len(date_matches)} datum-stämplar.")
+                  
+                  for date_str in date_matches:
                       try:
-                          m = int(match[0])
-                          found_minutes.append(m)
-                      except:
+                          # Rensa bort " ET" på slutet för att kunna parsa
+                          clean_date = date_str.replace(" ET", "")
+                          # Parsa strängen till ett datum-objekt
+                          # Format: Month Day, Year @ Hour:Minute AM/PM
+                          post_date = datetime.datetime.strptime(clean_date, "%B %d, %Y @ %I:%M %p")
+                          
+                          # Justera tidszon!
+                          # Datumet är i ET (Eastern Time). Servern är i UTC.
+                          # ET är ca 5 timmar efter UTC. Vi lägger på 5h för att få "UTC-tid" på inlägget.
+                          post_date_utc = post_date + datetime.timedelta(hours=5)
+                          
+                          # Räkna skillnad mot NU
+                          diff = now_utc - post_date_utc
+                          diff_minutes = int(diff.total_seconds() / 60)
+                          
+                          # Vi vill inte ha negativa minuter (om klockan går lite fel)
+                          if diff_minutes < 0: diff_minutes = 0
+                          
+                          found_minutes.append(diff_minutes)
+                          print(f"Datum: {clean_date} -> {diff_minutes} minuter sedan.")
+                      except Exception as e:
+                          print(f"Kunde inte tolka datum '{date_str}': {e}")
                           continue
+
+                  # --- METOD 2: Leta efter "minutes ago" (Backup) ---
+                  text_matches = re.findall(r'(\d+)\s*(m|min|mins|minutes?)\s+ago', text_content, re.IGNORECASE)
+                  for match in text_matches:
+                      found_minutes.append(int(match[0]))
                   
-                  # Hitta "Just now" = 0 minuter
                   if re.search(r'(just now|seconds? ago)', text_content, re.IGNORECASE):
                       found_minutes.append(0)
 
-                  # Om vi hittade några tider
+                  # --- SAMMANSTÄLLNING ---
                   if found_minutes:
-                      found_minutes.sort() # Sortera lägst först
+                      found_minutes.sort() # Sortera så lägst (nyast) kommer först
                       minutes_since_last = found_minutes[0]
                       
-                      # Räkna hur många som är under 60 min (för indexet)
+                      # Räkna antalet inlägg under 60 minuter
                       post_count = sum(1 for m in found_minutes if m < 60)
                       
                       status = "live"
                       fetched_success = True
-                      print(f"SUCCESS: Senaste inlägg {minutes_since_last} min sedan. {post_count} st senaste timmen.")
+                      print(f"SUCCESS: Senaste inlägg {minutes_since_last} min sedan. {post_count} st < 1h.")
                   else:
-                      # Om sidan funkar men inga tider hittades (troligen > 1h sen)
-                      minutes_since_last = 65 # Sätt till strax över en timme
-                      post_count = 0
+                      print("Inga tider hittades. Antagligen inga inlägg senaste dygnet.")
+                      # Vi sätter status till live men 0 inlägg
                       status = "live"
                       fetched_success = True
+                      post_count = 0
+                      minutes_since_last = 120 # Gammalt
 
           except Exception as e:
-              print(f"Fel: {e}")
+              print(f"Kritisk krasch: {e}")
 
-          # --- SIMULERING (Om live misslyckas) ---
+          # --- SIMULERING (Endast om sidan ligger nere) ---
           if not fetched_success:
               status = "estimated"
               source_label = "AI Prediction Model"
-              
-              # Logik: Om han sover (0 inlägg), så var det länge sen sist.
-              # Om han är aktiv, var det nyligen.
               roll = random.randint(0, 100)
-              
               if roll < 65: 
-                  # Lugnt läge
                   post_count = 0
-                  minutes_since_last = random.randint(65, 400) # 1h - 6h sen
+                  minutes_since_last = random.randint(65, 400)
               elif roll < 90:
-                  # Normalt läge
                   post_count = random.randint(1, 2)
                   minutes_since_last = random.randint(10, 45)
               else: 
-                  # Kaos läge
                   post_count = random.randint(3, 6)
                   minutes_since_last = random.randint(1, 9)
 
@@ -126,5 +150,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Timestamp Update" || exit 0
+          git commit -m "Date Parser Update" || exit 0
           git push
