@@ -1,7 +1,7 @@
-name: Update Trump Data (Final)
+name: Update Trump Data (Final API)
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '7,37 * * * *' # Körs minut 07 och 37 varje timme
   workflow_dispatch:
 
 jobs:
@@ -34,7 +34,7 @@ jobs:
               "platform": "all",
               "sort": "date",
               "sort_order": "desc",
-              "limit": "20",
+              "limit": "50", # Vi ökar gränsen lite för att vara säkra vid stormar
               "format": "json"
           }
           
@@ -61,62 +61,53 @@ jobs:
                       print(f"API svarade med {len(posts)} inlägg. Analyserar...")
                       
                       found_minutes = []
-                      
-                      # Vi använder tidszons-medveten tid (UTC)
                       now = datetime.datetime.now(datetime.timezone.utc)
                       
                       for post in posts:
                           date_str = post.get('date')
                           if date_str:
                               try:
-                                  # EXAKT RÄTT METOD FÖR DITT DATUM:
-                                  # fromisoformat klarar av "-05:00" på slutet automatiskt!
                                   post_date = datetime.datetime.fromisoformat(date_str)
-                                  
-                                  # Räkna skillnad (båda tiderna har nu tidszon, så matten blir rätt)
                                   diff = now - post_date
                                   diff_minutes = int(diff.total_seconds() / 60)
                                   
-                                  # Filtrera bort framtiden (om klockorna diffar någon sekund)
+                                  if diff_minutes < -100: diff_minutes += 300 
                                   if diff_minutes < 0: diff_minutes = 0
                                   
-                                  # Vi bryr oss om inlägg < 24 timmar
-                                  if diff_minutes < 1440:
+                                  if diff_minutes < 60: # Vi räknar bara senaste timmen
                                       found_minutes.append(diff_minutes)
                                       print(f" -> Inlägg: {date_str} ({diff_minutes} min sedan)")
+                                  # Vi sparar även senaste inlägget oavsett tid för dashboarden
+                                  elif diff_minutes < 500000:
+                                      found_minutes.append(diff_minutes)
                                       
                               except Exception as e:
-                                  print(f"Parse error '{date_str}': {e}")
                                   continue
 
                       if found_minutes:
-                          found_minutes.sort() # Nyast först
+                          found_minutes.sort()
                           minutes_since_last = found_minutes[0]
-                          
-                          # Räkna antalet inlägg under 60 minuter
+                          # Räkna ENDAST de som är < 60 minuter för post_count
                           post_count = sum(1 for m in found_minutes if m < 60)
                           
                           status = "live"
                           fetched_success = True
                           print(f"SUCCESS: Hittade {post_count} inlägg < 60 min. Senaste var {minutes_since_last} min sedan.")
                       else:
-                          print("Inga färska inlägg hittades (listan var gammal?).")
+                          print("Inga data kunde tolkas.")
                           status = "live"
-                          minutes_since_last = 120 # Gammalt
                           post_count = 0
+                          minutes_since_last = 120
                           fetched_success = True
-
                   else:
-                      print("Ingen 'data'-lista i svaret.")
+                      print("Ingen data-lista.")
               else:
                   print(f"Felkod: {response.status_code}")
 
           except Exception as e:
               print(f"Krasch: {e}")
 
-          # --- SIMULERING (Endast vid total krasch) ---
           if not fetched_success:
-              print("Kör simulering...")
               status = "estimated"
               utc_now = datetime.datetime.utcnow()
               dc_hour = (utc_now.hour - 5) % 24
@@ -127,12 +118,11 @@ jobs:
                   post_count = 0
                   minutes_since_last = random.randint(60, 180)
 
-          # Spara
           output = {
               "postCount": post_count,
               "minutesSince": minutes_since_last,
               "status": status,
-              "source": "Factbase API (Verified)",
+              "source": "Factbase API",
               "lastUpdated": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
           }
 
@@ -147,5 +137,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Final API Fix" || exit 0
+          git commit -m "Schedule & Logic Update" || exit 0
           git push
