@@ -1,4 +1,4 @@
-name: Update Trump Data (API Final Fix)
+name: Update Trump Data (Final)
 on:
   schedule:
     - cron: '*/30 * * * *'
@@ -48,7 +48,6 @@ jobs:
           try:
               headers = {
                   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                  'Referer': 'https://rollcall.com/factbase/trump/topic/social/',
                   'Accept': 'application/json'
               }
               
@@ -62,56 +61,50 @@ jobs:
                       print(f"API svarade med {len(posts)} inlägg. Analyserar...")
                       
                       found_minutes = []
-                      now_utc = datetime.datetime.utcnow()
                       
-                      # Felsökning: Visa första datumet för att se formatet
-                      if len(posts) > 0:
-                          print(f"DEBUG: Exempel på rådatum från API: {posts[0].get('date')}")
-
+                      # Vi använder tidszons-medveten tid (UTC)
+                      now = datetime.datetime.now(datetime.timezone.utc)
+                      
                       for post in posts:
                           date_str = post.get('date')
                           if date_str:
                               try:
-                                  # FIXEN: Ersätt 'T' med mellanslag om det finns (ISO format)
-                                  clean_date_str = date_str.replace('T', ' ')
+                                  # EXAKT RÄTT METOD FÖR DITT DATUM:
+                                  # fromisoformat klarar av "-05:00" på slutet automatiskt!
+                                  post_date = datetime.datetime.fromisoformat(date_str)
                                   
-                                  # Ibland finns millisekunder (t.ex .000Z), vi tar bort dem
-                                  if '.' in clean_date_str:
-                                      clean_date_str = clean_date_str.split('.')[0]
-                                  
-                                  post_date = datetime.datetime.strptime(clean_date_str, "%Y-%m-%d %H:%M:%S")
-                                  
-                                  # Beräkna skillnad
-                                  diff = now_utc - post_date
+                                  # Räkna skillnad (båda tiderna har nu tidszon, så matten blir rätt)
+                                  diff = now - post_date
                                   diff_minutes = int(diff.total_seconds() / 60)
                                   
-                                  # Tidszons-fix (ET vs UTC)
-                                  # Om inlägget ser ut att vara > 1 timme i framtiden (-100 min), så är det nog ET.
-                                  if diff_minutes < -100: 
-                                      diff_minutes += 300 # +5h
+                                  # Filtrera bort framtiden (om klockorna diffar någon sekund)
+                                  if diff_minutes < 0: diff_minutes = 0
                                   
-                                  if diff_minutes > -60 and diff_minutes < 500000:
-                                      if diff_minutes < 0: diff_minutes = 0
+                                  # Vi bryr oss om inlägg < 24 timmar
+                                  if diff_minutes < 1440:
                                       found_minutes.append(diff_minutes)
-                                      print(f" -> OK: {date_str} = {diff_minutes} min sedan.")
+                                      print(f" -> Inlägg: {date_str} ({diff_minutes} min sedan)")
+                                      
                               except Exception as e:
-                                  print(f"Kunde inte tolka datumet '{date_str}': {e}")
+                                  print(f"Parse error '{date_str}': {e}")
                                   continue
 
                       if found_minutes:
-                          found_minutes.sort()
+                          found_minutes.sort() # Nyast först
                           minutes_since_last = found_minutes[0]
+                          
+                          # Räkna antalet inlägg under 60 minuter
                           post_count = sum(1 for m in found_minutes if m < 60)
                           
                           status = "live"
                           fetched_success = True
                           print(f"SUCCESS: Hittade {post_count} inlägg < 60 min. Senaste var {minutes_since_last} min sedan.")
                       else:
-                          print("Kunde inte räkna ut tiderna, men vi fick data.")
-                          # Fallback om formatet är helt galet men vi vet att vi fick inlägg
+                          print("Inga färska inlägg hittades (listan var gammal?).")
                           status = "live"
-                          minutes_since_last = 15 # Gissning
-                          post_count = 1
+                          minutes_since_last = 120 # Gammalt
+                          post_count = 0
+                          fetched_success = True
 
                   else:
                       print("Ingen 'data'-lista i svaret.")
@@ -121,8 +114,9 @@ jobs:
           except Exception as e:
               print(f"Krasch: {e}")
 
-          # --- SIMULERING (Om allt skiter sig) ---
+          # --- SIMULERING (Endast vid total krasch) ---
           if not fetched_success:
+              print("Kör simulering...")
               status = "estimated"
               utc_now = datetime.datetime.utcnow()
               dc_hour = (utc_now.hour - 5) % 24
@@ -133,6 +127,7 @@ jobs:
                   post_count = 0
                   minutes_since_last = random.randint(60, 180)
 
+          # Spara
           output = {
               "postCount": post_count,
               "minutesSince": minutes_since_last,
@@ -152,5 +147,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "API Date Fix" || exit 0
+          git commit -m "Final API Fix" || exit 0
           git push
