@@ -1,4 +1,4 @@
-name: Update Trump Data (Deep Scan)
+name: Update Trump Data (JSON Hunt)
 on:
   schedule:
     - cron: '*/30 * * * *'
@@ -20,7 +20,7 @@ jobs:
       - name: Install Dependencies
         run: pip install requests
 
-      - name: Deep Scan for Dates
+      - name: JSON Data Hunt
         run: |
           cat <<EOF > analyzer.py
           import requests
@@ -28,93 +28,119 @@ jobs:
           import datetime
           import random
           import re
+          import time
 
-          url = "https://rollcall.com/factbase/trump/topic/social/?platform=all&sort=date&sort_order=desc"
-          
+          # Vi testar TVÅ adresser.
+          # 1. Huvudsidan (där datan kan ligga gömd i script-taggar)
+          url_main = "https://rollcall.com/factbase/trump/topic/social/?platform=all&sort=date&sort_order=desc"
+          # 2. En potentiell API-endpoint som Factbase ofta använder
+          url_api = "https://factba.se/json/json-recent.json"
+
           post_count = 0
           minutes_since_last = 999
           status = "simulated"
           fetched_success = False
           
-          print(f"Hämtar rådata från: {url}")
+          # Hämta UTC-tid nu
+          now_utc = datetime.datetime.utcnow()
 
+          print("--- STARTAR JÄKTA PÅ DATA ---")
+
+          # FÖRSÖK 1: Direkt API (Om den lever)
           try:
-              headers = {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-              }
-              response = requests.get(url, headers=headers, timeout=20)
-              
-              if response.status_code == 200:
-                  raw_html = response.text
-                  
-                  # STRATEGI: "The Big Net"
-                  # Vi letar efter ALLT som ser ut som ett datum som börjar på 2025 eller 2026
-                  # Regex: 202 följt av en siffra, bindestreck, två siffror... osv.
-                  # Detta fångar "2026-02-11T06:16:00" även om det ligger i en JSON-lista.
-                  
-                  print("Scannar koden efter årtal (2025-2026)...")
-                  
-                  # Vi letar efter mönstret: YYYY-MM-DD följt av antingen 'T' eller mellanslag, sen tid.
-                  matches = re.findall(r'(202[56]-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2})', raw_html)
-                  
-                  print(f"Hittade {len(matches)} potentiella tidsstämplar.")
-                  
-                  found_minutes = []
-                  now_utc = datetime.datetime.utcnow()
-                  
-                  for date_str in matches:
-                      try:
-                          # Försök tolka datumet
-                          # Vi byter ut 'T' mot mellanslag för att göra det enhetligt
-                          clean_str = date_str.replace('T', ' ')
-                          post_date = datetime.datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
-                          
-                          # VIKTIGT OM TIDSZONER:
-                          # Om datumet i koden är "06:16" (ET) men saknar tidszon, så tror servern att det är UTC.
-                          # 06:16 ET är 11:16 UTC.
-                          # Om vi jämför 06:16 med 13:00 (nu) blir det 7 timmar fel.
-                          # Vi gissar: Om datumet verkar vara "i framtiden" eller väldigt långt bak, justera.
-                          
-                          # Vi antar att Factbase lagrar UTC (Z) oftast.
-                          diff = now_utc - post_date
-                          diff_minutes = int(diff.total_seconds() / 60)
-                          
-                          # FIX: Om diffen är negativ (t.ex. -300 min), betyder det att datumet var i ET (lokal tid)
-                          # men vi tolkade det som UTC. Vi måste lägga på 5 timmar (300 min).
-                          if diff_minutes < -100: 
-                              # Justera för ET -> UTC (ungefärligt)
-                              diff_minutes += 300 
-                          
-                          # Filtrera bort nonsens (mer än ett år gammalt eller långt in i framtiden)
-                          if diff_minutes > -60 and diff_minutes < 500000:
-                              if diff_minutes < 0: diff_minutes = 0 # Justera "snart framtid" till nu
-                              found_minutes.append(diff_minutes)
-                              print(f" -> Datum: {date_str} = {diff_minutes} min sedan.")
-                              
-                      except Exception as e:
-                          # print(f"Parse error: {e}")
-                          continue
-
-                  if found_minutes:
-                      found_minutes.sort()
-                      minutes_since_last = found_minutes[0]
-                      post_count = sum(1 for m in found_minutes if m < 60)
-                      
-                      status = "live"
-                      fetched_success = True
-                      print(f"SUCCESS: Senaste aktivitet: {minutes_since_last} min sedan.")
-                  else:
-                      print("Inga giltiga datum hittades.")
-
+              print(f"Testar API: {url_api}")
+              headers = {'User-Agent': 'Mozilla/5.0'}
+              resp = requests.get(url_api, headers=headers, timeout=10)
+              if resp.status_code == 200:
+                  print("API Svarade! Analyserar JSON...")
+                  data = resp.json()
+                  # Här måste vi gissa strukturen, men ofta är det en lista
+                  # Vi letar efter datumsträngar i hela blobben
+                  raw_text = json.dumps(data)
               else:
-                  print(f"Felkod: {response.status_code}")
+                  print("API fungerade inte, går vidare till Huvudsidan.")
+                  raw_text = ""
+          except:
+              print("API-anrop misslyckades.")
+              raw_text = ""
 
-          except Exception as e:
-              print(f"Krasch: {e}")
+          # FÖRSÖK 2: Huvudsidan (Deep Scan efter Epoch-tid)
+          if not raw_text:
+              try:
+                  print(f"Hämtar HTML från: {url_main}")
+                  headers = {
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                  }
+                  resp = requests.get(url_main, headers=headers, timeout=20)
+                  raw_text = resp.text
+              except Exception as e:
+                  print(f"Kunde inte hämta HTML: {e}")
 
-          # --- SIMULERING ---
+          # ANALYS: Leta efter Unix Tidsstämplar (Epoch)
+          # Tider år 2026 börjar på 17... (t.ex. 1765432100)
+          # Vi letar efter siffror som börjar på 17 följt av 8 siffror (sekunder) eller 11 siffror (millisekunder)
+          
+          print("Letar efter dolda tidsstämplar (Epoch)...")
+          
+          # Regex för sekunder (10 siffror, börjar på 17) -> År 2024-2026
+          epoch_matches = re.findall(r'(17\d{8})', raw_text)
+          
+          # Regex för millisekunder (13 siffror, börjar på 17)
+          epoch_ms_matches = re.findall(r'(17\d{11})', raw_text)
+
+          all_timestamps = []
+
+          # Hantera sekunder
+          for ts in epoch_matches:
+              try:
+                  dt = datetime.datetime.utcfromtimestamp(int(ts))
+                  all_timestamps.append(dt)
+              except: continue
+
+          # Hantera millisekunder
+          for ts in epoch_ms_matches:
+              try:
+                  dt = datetime.datetime.utcfromtimestamp(int(ts) / 1000)
+                  all_timestamps.append(dt)
+              except: continue
+
+          print(f"Hittade {len(all_timestamps)} potentiella tidsstämplar.")
+
+          found_minutes = []
+
+          for post_date in all_timestamps:
+              # Räkna skillnad
+              diff = now_utc - post_date
+              diff_minutes = int(diff.total_seconds() / 60)
+              
+              # Filtrera: Måste vara i dåtid (pos) men mindre än 1 år gammalt
+              # Vi accepterar små negativa värden (-60 min) pga tidszoner och justerar dem
+              if diff_minutes > -300 and diff_minutes < 500000:
+                  
+                  # Justering för Eastern Time (om tidsstämpeln var lokal tid men tolkades som UTC)
+                  # Om inlägget ser ut att vara "300 minuter i framtiden" (-300), så är det nog ET.
+                  if diff_minutes < 0: 
+                      adjusted_minutes = diff_minutes + 300 # Lägg på 5h
+                      if adjusted_minutes < 0: adjusted_minutes = 0 # Fortfarande framtid? Sätt till nu.
+                      found_minutes.append(adjusted_minutes)
+                  else:
+                      found_minutes.append(diff_minutes)
+
+          if found_minutes:
+              found_minutes.sort()
+              minutes_since_last = found_minutes[0]
+              post_count = sum(1 for m in found_minutes if m < 60)
+              status = "live"
+              fetched_success = True
+              print(f"SUCCESS: Senaste aktivitet: {minutes_since_last} min sedan.")
+          else:
+              print("Inga giltiga tidsstämplar hittades.")
+
+
+          # --- SIMULERING (Fallback) ---
           if not fetched_success:
               status = "estimated"
+              # Samma gamla trygga AI-modell
               roll = random.randint(0, 100)
               if roll < 65: 
                   post_count = 0
@@ -145,5 +171,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Deep Scan Update" || exit 0
+          git commit -m "Epoch Hunt Update" || exit 0
           git push
