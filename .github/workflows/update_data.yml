@@ -1,4 +1,4 @@
-name: Update Trump Data (Raw Data Extraction)
+name: Update Trump Data (Deep Scan)
 on:
   schedule:
     - cron: '*/30 * * * *'
@@ -20,7 +20,7 @@ jobs:
       - name: Install Dependencies
         run: pip install requests
 
-      - name: Scrape Raw Data
+      - name: Deep Scan for Dates
         run: |
           cat <<EOF > analyzer.py
           import requests
@@ -35,8 +35,7 @@ jobs:
           minutes_since_last = 999
           status = "simulated"
           fetched_success = False
-          source_label = "Roll Call (Aggregator)"
-
+          
           print(f"Hämtar rådata från: {url}")
 
           try:
@@ -48,69 +47,74 @@ jobs:
               if response.status_code == 200:
                   raw_html = response.text
                   
-                  # STRATEGI: Leta efter ISO-datum i koden (t.ex. "2026-02-11T06:16:00")
-                  # Eftersom sidan använder JavaScript ligger datumen ofta sparade så här.
-                  # Vi letar efter mönstret: ÅÅÅÅ-MM-DD följt av T och tid.
+                  # STRATEGI: "The Big Net"
+                  # Vi letar efter ALLT som ser ut som ett datum som börjar på 2025 eller 2026
+                  # Regex: 202 följt av en siffra, bindestreck, två siffror... osv.
+                  # Detta fångar "2026-02-11T06:16:00" även om det ligger i en JSON-lista.
                   
-                  print("Letar efter dolda tidsstämplar i koden...")
+                  print("Scannar koden efter årtal (2025-2026)...")
                   
-                  # Regex för standard ISO-datum (Fångar '2026-02-11T14:30:00')
-                  iso_dates = re.findall(r'(202[0-9]-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})', raw_html)
+                  # Vi letar efter mönstret: YYYY-MM-DD följt av antingen 'T' eller mellanslag, sen tid.
+                  matches = re.findall(r'(202[56]-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2})', raw_html)
                   
-                  print(f"Hittade {len(iso_dates)} stämplar i rådatan.")
+                  print(f"Hittade {len(matches)} potentiella tidsstämplar.")
                   
                   found_minutes = []
                   now_utc = datetime.datetime.utcnow()
                   
-                  for date_str in iso_dates:
+                  for date_str in matches:
                       try:
-                          # Parsa datumet (ISO format)
-                          post_date = datetime.datetime.fromisoformat(date_str)
+                          # Försök tolka datumet
+                          # Vi byter ut 'T' mot mellanslag för att göra det enhetligt
+                          clean_str = date_str.replace('T', ' ')
+                          post_date = datetime.datetime.strptime(clean_str, "%Y-%m-%d %H:%M:%S")
                           
-                          # Ofta är dessa datum i UTC (Z) eller lokal tid. 
-                          # Om det diffar för mycket kan vi behöva justera, men vi antar UTC/Server-tid först.
-                          # Factba verkar köra UTC i sina json-objekt oftast.
+                          # VIKTIGT OM TIDSZONER:
+                          # Om datumet i koden är "06:16" (ET) men saknar tidszon, så tror servern att det är UTC.
+                          # 06:16 ET är 11:16 UTC.
+                          # Om vi jämför 06:16 med 13:00 (nu) blir det 7 timmar fel.
+                          # Vi gissar: Om datumet verkar vara "i framtiden" eller väldigt långt bak, justera.
                           
-                          # Räkna skillnad
+                          # Vi antar att Factbase lagrar UTC (Z) oftast.
                           diff = now_utc - post_date
                           diff_minutes = int(diff.total_seconds() / 60)
                           
-                          # Filtrera bort orimliga tider (framtiden eller gamla år om regexet fick fnatt)
-                          if diff_minutes > -60 and diff_minutes < 525600: # Inom ett år bakåt
-                              # Om inlägget är i framtiden (tidszonsfel), sätt till 0 min
-                              if diff_minutes < 0: diff_minutes = 0
-                              
+                          # FIX: Om diffen är negativ (t.ex. -300 min), betyder det att datumet var i ET (lokal tid)
+                          # men vi tolkade det som UTC. Vi måste lägga på 5 timmar (300 min).
+                          if diff_minutes < -100: 
+                              # Justera för ET -> UTC (ungefärligt)
+                              diff_minutes += 300 
+                          
+                          # Filtrera bort nonsens (mer än ett år gammalt eller långt in i framtiden)
+                          if diff_minutes > -60 and diff_minutes < 500000:
+                              if diff_minutes < 0: diff_minutes = 0 # Justera "snart framtid" till nu
                               found_minutes.append(diff_minutes)
-                              # print(f"Datum: {date_str} -> {diff_minutes} minuter sedan")
-                      except:
+                              print(f" -> Datum: {date_str} = {diff_minutes} min sedan.")
+                              
+                      except Exception as e:
+                          # print(f"Parse error: {e}")
                           continue
 
-                  # --- Resultat ---
                   if found_minutes:
-                      found_minutes.sort() # Nyast först (minst antal minuter)
+                      found_minutes.sort()
                       minutes_since_last = found_minutes[0]
-                      
-                      # Räkna inlägg senaste timmen (< 60 min)
                       post_count = sum(1 for m in found_minutes if m < 60)
                       
                       status = "live"
                       fetched_success = True
-                      print(f"SUCCESS: Senaste inlägg {minutes_since_last} min sedan. {post_count} st senaste timmen.")
+                      print(f"SUCCESS: Senaste aktivitet: {minutes_since_last} min sedan.")
                   else:
-                      print("Inga ISO-datum hittades som matchade.")
+                      print("Inga giltiga datum hittades.")
 
               else:
-                  print(f"Fel vid hämtning: {response.status_code}")
+                  print(f"Felkod: {response.status_code}")
 
           except Exception as e:
-              print(f"Krasch vid analys: {e}")
+              print(f"Krasch: {e}")
 
-          # --- SIMULERING (Om vi inte hittar data) ---
+          # --- SIMULERING ---
           if not fetched_success:
               status = "estimated"
-              source_label = "AI Prediction Model"
-              
-              # Samma simulering som alltid funkar
               roll = random.randint(0, 100)
               if roll < 65: 
                   post_count = 0
@@ -122,12 +126,11 @@ jobs:
                   post_count = random.randint(3, 6)
                   minutes_since_last = random.randint(1, 9)
 
-          # Spara data
+          # Spara
           output = {
               "postCount": post_count,
               "minutesSince": minutes_since_last,
               "status": status,
-              "source": source_label,
               "lastUpdated": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
           }
 
@@ -142,5 +145,5 @@ jobs:
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Raw Data Fix" || exit 0
+          git commit -m "Deep Scan Update" || exit 0
           git push
