@@ -17,7 +17,6 @@ jobs:
           python-version: '3.13'
       - name: Install diagnostic dependencies
         run: |
-          python -m pip install requests beautifulsoup4 playwright
-          python -m playwright install --with-deps chromium
+          python -m pip install requests beautifulsoup4
       - name: Diagnose Roll Call page (no content persisted)
         run: python factbase_diagnostic.py
