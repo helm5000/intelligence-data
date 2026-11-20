@@ -26,6 +26,28 @@ try:
 except Exception as exc:
     print('requests failed:',repr(exc),flush=True)
 
+
+def structure(obj,depth=0):
+    if depth>2:
+        return type(obj).__name__
+    if isinstance(obj,dict):
+        return {k:structure(v,depth+1) for k,v in list(obj.items())[:25]}
+    if isinstance(obj,list):
+        return {'length':len(obj),'first_item_structure':structure(obj[0],depth+1) if obj else None}
+    if isinstance(obj,str):
+        return {'type':'string','length':len(obj)} if len(obj)>90 else obj
+    return obj
+
+try:
+    direct=requests.get('https://rollcall.com/api/factbase/social',timeout=20,headers={'Accept':'application/json'})
+    print('new API direct:',direct.status_code,'bytes:',len(direct.content),'content_type:',direct.headers.get('content-type'),flush=True)
+    try:
+        print('new API structure:',structure(direct.json()),flush=True)
+    except ValueError:
+        print('new API non-JSON body prefix:',repr(direct.text[:140]),flush=True)
+except Exception as exc:
+    print('new API direct failed:',repr(exc),flush=True)
+
 try:
     observed=set()
     with sync_playwright() as p:
@@ -35,7 +57,9 @@ try:
             try:
                 if resp.request.resource_type in ('xhr','fetch'):
                     u=urlparse(resp.url)
-                    observed.add((resp.status,u.netloc,u.path[:180]))
+                    observed.add((resp.status,u.netloc,u.path[:180],tuple(sorted(__import__('urllib.parse',fromlist=['parse_qs']).parse_qs(u.query).keys()))))
+                    if u.netloc=='rollcall.com' and u.path.startswith('/api/factbase/'):
+                        print('browser Factbase API:',resp.status,'structure:',structure(resp.json()),flush=True)
             except Exception:
                 pass
         page.on('response',on_response)
