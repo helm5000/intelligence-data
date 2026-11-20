@@ -47,3 +47,30 @@ try:
 except Exception as exc:
     print('new API direct failed:',repr(exc),flush=True)
 
+
+
+print('--- API stats & filtered-query checks ---',flush=True)
+base='https://rollcall.com/api/factbase/social'
+params_tests=[
+    ('default',None),
+    ('last_hour date_range',{'date_range':'last_hour'}),
+    ('last_hour dateFilter',{'dateFilter':'last_hour'}),
+    ('last_hour range',{'range':'last_hour'}),
+    ('platform all latest',{'platform':'all','sort':'date','sort_order':'desc','limit':'50'})
+]
+for label,params in params_tests:
+    try:
+        r=requests.get(base,params=params,timeout=20,headers={'Accept':'application/json'})
+        print('variant:',label,'status:',r.status_code,'bytes:',len(r.content),flush=True)
+        if r.status_code!=200: continue
+        js=r.json()
+        print('variant META:',label,repr(js.get('meta'))[:750],flush=True)
+        print('variant STATS:',label,'last_hour',repr(js.get('stats',{}).get('date_range',{}).get('last_hour'))[:900],
+            'last_day',repr(js.get('stats',{}).get('date_range',{}).get('last_day'))[:450],
+            'platform',repr(js.get('stats',{}).get('platform'))[:450],flush=True)
+        items=js.get('data',[])
+        print('variant ITEM:',label,'num',len(items),'head',repr([
+            {'date':x.get('date'),'platform':x.get('platform'),'id':x.get('id'),'type':x.get('type')}
+            for x in items[:4]])[:950],flush=True)
+    except Exception as exc:
+        print('variant ERROR:',label,repr(exc)[:240],flush=True)
