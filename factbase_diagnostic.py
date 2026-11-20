@@ -2,7 +2,6 @@ from urllib.parse import urlparse
 import re
 import requests
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright
 
 URL='https://rollcall.com/factbase/trump/topic/social/'
 
@@ -48,26 +47,3 @@ try:
 except Exception as exc:
     print('new API direct failed:',repr(exc),flush=True)
 
-try:
-    observed=set()
-    with sync_playwright() as p:
-        browser=p.chromium.launch(headless=True,args=['--no-sandbox'])
-        page=browser.new_page(viewport={'width':1280,'height':900})
-        def on_response(resp):
-            try:
-                if resp.request.resource_type in ('xhr','fetch'):
-                    u=urlparse(resp.url)
-                    observed.add((resp.status,u.netloc,u.path[:180],tuple(sorted(__import__('urllib.parse',fromlist=['parse_qs']).parse_qs(u.query).keys()))))
-                    if u.netloc=='rollcall.com' and u.path.startswith('/api/factbase/'):
-                        print('browser Factbase API:',resp.status,'structure:',structure(resp.json()),flush=True)
-            except Exception:
-                pass
-        page.on('response',on_response)
-        resp=page.goto(URL,wait_until='domcontentloaded',timeout=45000)
-        page.wait_for_timeout(10000)
-        print('browser status:',resp.status if resp else None,'page title:',page.title(),flush=True)
-        inspect(page.content(),'rendered HTML')
-        print('network xhr/fetch (status,host,path only):',sorted(observed)[:40],flush=True)
-        browser.close()
-except Exception as exc:
-    print('browser failed:',repr(exc),flush=True)
