@@ -1,8 +1,9 @@
 name: Update Trump Data (Final API)
 on:
   schedule:
-    - cron: '7,37 * * * *' # Körs minut 07 och 37 varje timme
+    - cron: '3,13,23,33,43,53 * * * *'
   workflow_dispatch:
+  pull_request:
 
 jobs:
   update:
@@ -11,131 +12,25 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
-
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.13'
-
       - name: Install Dependencies
         run: pip install requests
-
-      - name: Fetch API Data
-        run: |
-          cat <<EOF > analyzer.py
-          import requests
-          import json
-          import datetime
-          import random
-
-          url = "https://rollcall.com/wp-json/factbase/v1/twitter"
-          
-          params = {
-              "platform": "all",
-              "sort": "date",
-              "sort_order": "desc",
-              "limit": "50", # Vi ökar gränsen lite för att vara säkra vid stormar
-              "format": "json"
-          }
-          
-          post_count = 0
-          minutes_since_last = 999
-          status = "simulated"
-          fetched_success = False
-          
-          print(f"Anropar API: {url}")
-
-          try:
-              headers = {
-                  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                  'Accept': 'application/json'
-              }
-              
-              response = requests.get(url, params=params, headers=headers, timeout=20)
-              
-              if response.status_code == 200:
-                  data = response.json()
-                  
-                  if 'data' in data and isinstance(data['data'], list):
-                      posts = data['data']
-                      print(f"API svarade med {len(posts)} inlägg. Analyserar...")
-                      
-                      found_minutes = []
-                      now = datetime.datetime.now(datetime.timezone.utc)
-                      
-                      for post in posts:
-                          date_str = post.get('date')
-                          if date_str:
-                              try:
-                                  post_date = datetime.datetime.fromisoformat(date_str)
-                                  diff = now - post_date
-                                  diff_minutes = int(diff.total_seconds() / 60)
-                                  
-                                  if diff_minutes < -100: diff_minutes += 300 
-                                  if diff_minutes < 0: diff_minutes = 0
-                                  
-                                  if diff_minutes < 60: # Vi räknar bara senaste timmen
-                                      found_minutes.append(diff_minutes)
-                                      print(f" -> Inlägg: {date_str} ({diff_minutes} min sedan)")
-                                  # Vi sparar även senaste inlägget oavsett tid för dashboarden
-                                  elif diff_minutes < 500000:
-                                      found_minutes.append(diff_minutes)
-                                      
-                              except Exception as e:
-                                  continue
-
-                      if found_minutes:
-                          found_minutes.sort()
-                          minutes_since_last = found_minutes[0]
-                          # Räkna ENDAST de som är < 60 minuter för post_count
-                          post_count = sum(1 for m in found_minutes if m < 60)
-                          
-                          status = "live"
-                          fetched_success = True
-                          print(f"SUCCESS: Hittade {post_count} inlägg < 60 min. Senaste var {minutes_since_last} min sedan.")
-                      else:
-                          print("Inga data kunde tolkas.")
-                          status = "live"
-                          post_count = 0
-                          minutes_since_last = 120
-                          fetched_success = True
-                  else:
-                      print("Ingen data-lista.")
-              else:
-                  print(f"Felkod: {response.status_code}")
-
-          except Exception as e:
-              print(f"Krasch: {e}")
-
-          if not fetched_success:
-              status = "estimated"
-              utc_now = datetime.datetime.utcnow()
-              dc_hour = (utc_now.hour - 5) % 24
-              if 6 <= dc_hour <= 10:
-                  post_count = random.randint(1, 3)
-                  minutes_since_last = random.randint(5, 45)
-              else:
-                  post_count = 0
-                  minutes_since_last = random.randint(60, 180)
-
-          output = {
-              "postCount": post_count,
-              "minutesSince": minutes_since_last,
-              "status": status,
-              "source": "Factbase API",
-              "lastUpdated": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-          }
-
-          with open('data.json', 'w') as f:
-              json.dump(output, f)
-          EOF
-
-          python analyzer.py
-
+      - name: Validate counter logic
+        run: python -m unittest discover -s tests -v
+      - name: Read Factbase social activity
+        run: python analyzer.py ${{ github.event_name == 'pull_request' && '--dry-run' || '' }}
       - name: Commit and Push
+        if: github.event_name != 'pull_request'
         run: |
           git config user.name "github-actions"
           git config user.email "action@github.com"
           git add data.json
-          git commit -m "Schedule & Logic Update" || exit 0
-          git push
+          if ! git diff --cached --quiet; then
+            git commit -m "Update verified Factbase social counts"
+            git push
+          else
+            echo "No data changes"
+          fi
